@@ -19,8 +19,8 @@ var blocklist = [
 ];
 
 var allowlist = [
-    "cutefish-launcher cutefish-launcher",
-    "cutefish-screenshot cutefish-screenshot"
+    "yoyo-launcher yoyo-launcher",
+    "yoyo-screenshot yoyo-screenshot"
 ];
 
 function isPopupWindow(window) {
@@ -72,10 +72,10 @@ function isPopupWindow(window) {
     return false;
 }
 
-var cutefishPopupsEffect = {
+var yoyoPopupsEffect = {
     loadConfig: function () {
-        cutefishPopupsEffect.fadeInDuration = animationTime(100);
-        cutefishPopupsEffect.fadeOutDuration = animationTime(100) * 4;
+        yoyoPopupsEffect.fadeInDuration = animationTime(100);
+        yoyoPopupsEffect.fadeOutDuration = animationTime(100) * 4;
     },
     slotWindowAdded: function (window) {
         if (effects.hasActiveFullScreenEffect) {
@@ -93,7 +93,7 @@ var cutefishPopupsEffect = {
         window.fadeInAnimation = animate({
             window: window,
             curve: QEasingCurve.Linear,
-            duration: cutefishPopupsEffect.fadeInDuration,
+            duration: yoyoPopupsEffect.fadeInDuration,
             type: Effect.Opacity,
             from: 0.0,
             to: 1.0
@@ -115,7 +115,7 @@ var cutefishPopupsEffect = {
         window.fadeOutAnimation = animate({
             window: window,
             curve: QEasingCurve.OutQuart,
-            duration: cutefishPopupsEffect.fadeOutDuration,
+            duration: yoyoPopupsEffect.fadeOutDuration,
             type: Effect.Opacity,
             from: 1.0,
             to: 0.0
@@ -135,13 +135,13 @@ var cutefishPopupsEffect = {
         }
     },
     init: function () {
-        cutefishPopupsEffect.loadConfig();
+        yoyoPopupsEffect.loadConfig();
 
-        effect.configChanged.connect(cutefishPopupsEffect.loadConfig);
-        effects.windowAdded.connect(cutefishPopupsEffect.slotWindowAdded);
-        effects.windowClosed.connect(cutefishPopupsEffect.slotWindowClosed);
-        effects.windowDataChanged.connect(cutefishPopupsEffect.slotWindowDataChanged);
+        effect.configChanged.connect(yoyoPopupsEffect.loadConfig);
+        effects.windowAdded.connect(yoyoPopupsEffect.slotWindowAdded);
+        effects.windowClosed.connect(yoyoPopupsEffect.slotWindowClosed);
+        effects.windowDataChanged.connect(yoyoPopupsEffect.slotWindowDataChanged);
     }
 };
 
-cutefishPopupsEffect.init();
+yoyoPopupsEffect.init();

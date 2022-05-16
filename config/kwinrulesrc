@@ -1,15 +1,15 @@
 [1]
-Description=cutefish-dock
+Description=yoyo-dock
 desktop=-1
 desktoprule=2
-wmclass=cutefish-dock cutefish-dock
+wmclass=yoyo-dock yoyo-dock
 wmclasscomplete=true
 wmclassmatch=1
 
 [2]
-Description=cutefish-launcher
+Description=yoyo-launcher
 strictgeometry=false
 strictgeometryrule=2
-wmclass=cutefish-launcher cutefish-launcher
+wmclass=yoyo-launcher yoyo-launcher
 wmclasscomplete=true
 wmclassmatch=1

@@ -193,7 +193,7 @@ static KWin::GLTexture *getTexture(int borderRadius)
 RoundedWindow::RoundedWindow(QObject *, const QVariantList &)
     : KWin::Effect()
 {
-    QSettings settings(QSettings::UserScope, "cutefishos", "theme");
+    QSettings settings(QSettings::UserScope, "yoyoos", "theme");
     qreal devicePixelRatio = settings.value("PixelRatio", 1.0).toReal();
     m_frameRadius = 11 * devicePixelRatio;
 
@@ -232,7 +232,7 @@ bool RoundedWindow::supported()
     if (desktop.isEmpty())
         return false;
 
-    return desktop == "Cutefish" && KWin::effects->isOpenGLCompositing() && KWin::GLRenderTarget::supported();
+    return desktop == "Yoyo" && KWin::effects->isOpenGLCompositing() && KWin::GLRenderTarget::supported();
 }
 
 bool RoundedWindow::enabledByDefault()

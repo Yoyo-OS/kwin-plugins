@@ -2,8 +2,8 @@
     "KPlugin": {
         "Description": "Window decoration",
         "EnabledByDefault": true,
-        "Id": "org.cutefish.decoration",
-        "Name": "CutefishOS Window Frame",
+        "Id": "org.yoyo.decoration",
+        "Name": "YoyoOS Window Frame",
         "ServiceTypes": [
             "org.kde.kdecoration2"
         ]

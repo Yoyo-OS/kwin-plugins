@@ -39,11 +39,11 @@
 #include <cmath>
 
 K_PLUGIN_FACTORY_WITH_JSON(
-    CutefishDecorationFactory,
-    "cutefishos.json",
-    registerPlugin<Cutefish::Decoration>(););
+    YoyoDecorationFactory,
+    "yoyoos.json",
+    registerPlugin<Yoyo::Decoration>(););
 
-namespace Cutefish
+namespace Yoyo
 {
 static int g_sDecoCount = 0;
 static int g_shadowSize = 0;
@@ -53,7 +53,7 @@ static QSharedPointer<KDecoration2::DecorationShadow> g_sShadow;
 
 Decoration::Decoration(QObject *parent, const QVariantList &args)
     : KDecoration2::Decoration(parent, args)
-    , m_settings(new QSettings(QSettings::UserScope, "cutefishos", "theme"))
+    , m_settings(new QSettings(QSettings::UserScope, "yoyoos", "theme"))
     , m_settingsFile(m_settings->fileName())
     , m_fileWatcher(new QFileSystemWatcher)
     , m_x11Shadow(new X11Shadow)
@@ -148,7 +148,7 @@ void Decoration::init()
     connect(c, &KDecoration2::DecoratedClient::adjacentScreenEdgesChanged, this, &Decoration::updateButtonsGeometry);
     connect(c, &KDecoration2::DecoratedClient::shadedChanged, this, &Decoration::updateButtonsGeometry);
 
-    // cutefishos settings
+    // yoyoos settings
     m_fileWatcher->addPath(m_settingsFile);
     connect(m_fileWatcher, &QFileSystemWatcher::fileChanged, this, [=] {
         m_settings->sync();
@@ -361,7 +361,7 @@ int Decoration::titleBarHeight() const
 
 bool Decoration::darkMode() const
 {
-    QSettings settings(QSettings::UserScope, "cutefishos", "theme");
+    QSettings settings(QSettings::UserScope, "yoyoos", "theme");
     return settings.value("DarkMode", false).toBool();
 }
 

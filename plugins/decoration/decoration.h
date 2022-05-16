@@ -31,7 +31,7 @@
 
 #include "x11shadow.h"
 
-namespace Cutefish
+namespace Yoyo
 {
 
 class CloseButton;

@@ -14,7 +14,7 @@ kwin4_effect_squashEnabled=false
 kwin4_effect_translucencyEnabled=false
 magiclampEnabled=false
 
-cutefish_scaleEnabled = true
+yoyo_scaleEnabled = true
 
 
 [Effect-Blur]
@@ -46,7 +46,7 @@ BorderActivate=9
 BorderAlternativeActivate=9
 DesktopMode=1
 HighlightWindows=true
-LayoutName=cutefish_thumbnail
+LayoutName=yoyo_thumbnail
 MinimizedMode=0
 MultiScreenMode=0
 ShowDesktopMode=1
@@ -66,5 +66,5 @@ Top=None
 BorderSize=Normal
 ButtonsOnLeft=
 ButtonsOnRight=HIAX
-library=org.cutefish.decoration
+library=org.yoyo.decoration
 theme=

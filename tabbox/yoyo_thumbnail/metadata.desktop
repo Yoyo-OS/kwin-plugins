@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=Cutefish Thumbnail Grid
+Name=Yoyo Thumbnail Grid
 Comment=
 
 Type=Service
@@ -11,7 +11,7 @@ X-Plasma-MainScript=ui/main.qml
 Icon=preferences-system-windows-switcher-big-icons
 X-KDE-PluginInfo-Author=Chris Holland
 X-KDE-PluginInfo-Email=zrenfire@gmail.com
-X-KDE-PluginInfo-Name=cutefish_thumbnail
+X-KDE-PluginInfo-Name=yoyo_thumbnail
 X-KDE-PluginInfo-Version=4
 X-KDE-PluginInfo-Website=https://github.com/Zren/kwin-tabbox-thumbnail_grid
 X-KDE-PluginInfo-Depends=

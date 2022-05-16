@@ -18,9 +18,9 @@ var blocklist = [
     // KDE Plasma splash screen has to be animated only by the login effect.
     "ksplashqml ksplashqml",
 
-    "cutefish-launcher cutefish-launcher",
-    "cutefish-statusbar cutefish-statusbar",
-    "cutefish-screenshot cutefish-screenshot"
+    "yoyo-launcher yoyo-launcher",
+    "yoyo-statusbar yoyo-statusbar",
+    "yoyo-screenshot yoyo-screenshot"
 ];
 
 var scaleEffect = {

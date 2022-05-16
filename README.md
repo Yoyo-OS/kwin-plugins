@@ -1,4 +1,4 @@
-# CutefishOS KWin Plugins
+# YoyoOS KWin Plugins
 
 ## Dependencies
 
@@ -16,4 +16,4 @@ sudo make install
 
 ## License
 
-cutefish-kwin-plugins is licensed under GPLv3.
+yoyo-kwin-plugins is licensed under GPLv3.
