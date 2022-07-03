@@ -59,7 +59,7 @@ RoundedwindowEffect::RoundedwindowEffect() : Effect(), m_shader(0)
         shadersDir = QStringLiteral("shaders_140");
 
     const QString shader = "qrc:/"+shadersDir+"/roundedwindow.frag";
-    const QString diff_shader = "qrc:/"+shadersDir+"/roundedwindow_diff.frag"
+    const QString diff_shader = "qrc:/"+shadersDir+"/roundedwindow_diff.frag";
 
     QFile file_shader(shader);
     QFile file_diff_shader(diff_shader);
