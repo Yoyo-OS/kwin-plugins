@@ -5,7 +5,7 @@ OpenGLIsUnsafe=false
 blurEnabled=true
 kwin4_effect_fadingpopupsEnabled=false
 kwin4_effect_dialogparentEnabled=true
-
+kwin4_effect_roundedwindow=true
 kwin4_effect_fadeEnabled=false
 kwin4_effect_scaleEnabled=false
 kwin4_effect_grayscaleEnabled = false

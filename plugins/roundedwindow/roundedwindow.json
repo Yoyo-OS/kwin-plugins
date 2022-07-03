@@ -14,12 +14,13 @@
         "Icon": "",
         "Id": "kwin4_effect_roundedwindow",
         "License": "GPL",
-        "Name": "RoundedWindow",
+        "Name": "Roundedwindow",
         "ServiceTypes": [
             "KWin/Effect"
         ],
         "Version": "git"
     },
+    "X-KDE-ConfigModule": "kwin4_roundedwindow_config",
     "org.kde.kwin.effect": {
         "video": "",
         "exclusiveGroup": "",

@@ -1,6 +1,5 @@
 /*
- *   Copyright © 2021 Reion Wong <reionwong@gmail.com>
- *   Copyright © 2021 Reven Martin <revenmartin@gmail.com>
+ *   Copyright © 2015 Robert Metsäranta <therealestrob@gmail.com>
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -18,359 +17,928 @@
  *   Boston, MA 02110-1301, USA.
  */
 
+#include "dbus.h"
 #include "roundedwindow.h"
-
-// Qt
-#include <QFile>
 #include <QPainter>
 #include <QPainterPath>
-#include <QRegion>
-#include <QDebug>
+#include <QImage>
+#include <QFile>
+#include <QTextStream>
+#include <QStandardPaths>
+#include <kwinglplatform.h>
+#include <kwinglutils.h>
+#include <QMatrix4x4>
+#include <KConfigGroup>
+#include <QtDBus/QDBusConnection>
+#include <QRegularExpression>
 
-#include <QSettings>
+namespace KWin {
 
-Q_DECLARE_METATYPE(QPainterPath)
+#ifndef KWIN_PLUGIN_FACTORY_NAME
+KWIN_EFFECT_FACTORY_SUPPORTED_ENABLED(RoundedwindowFactory, RoundedwindowEffect, "roundedwindow.json", return RoundedwindowEffect::supported();, return RoundedwindowEffect::enabledByDefault();)
+#else
+KWIN_EFFECT_FACTORY_SUPPORTED_ENABLED(RoundedwindowEffect, "roundedwindow.json", return RoundedwindowEffect::supported();, return RoundedwindowEffect::enabledByDefault();)
+#endif
 
-typedef void (* SetDepth)(void *, int);
-static SetDepth setDepthfunc = nullptr;
 
-static QStringList allowList = { "netease-cloud-music netease-cloud-music",
-                                 "com.alibabainc.dingtalk com.alibabainc.dingtalk",
-                                 "tenvideo_universal tenvideo_universal",
-                                 "com.eusoft.ting.en com.eusoft.ting.en",
-                                 "i4toolslinux i4tools",
-                                 "youku-app youku-app",
-                                 "qqmusic qqmusic",
-                                 "mytime mytime",
-                                 "feishu feishu",
-                                 "bytedance-feishu bytedance-feishu",
-                                 "xmind xmind",
-                                 "mtxx mtxx",
-                                 "ynote-desktop ynote-desktop",
-
-                                 // Open source software
-                                 "code code",
-                                 "motrix motrix"
-                               };
-
-// From ubreffect
-static KWin::GLShader *getShader()
+RoundedwindowEffect::RoundedwindowEffect() : Effect(), m_shader(0)
 {
-    // copy from kwinglutils.cpp
-    QByteArray source;
-    QTextStream stream(&source);
+    new EffectAdaptor(this);
+    QDBusConnection::sessionBus().registerObject("/Roundedwindow", this);
+    for (int i = 0; i < NTex; ++i)
+    {
+        m_tex[i] = 0;
+        m_rect[i] = 0;
+        m_dark_rect[i] = 0;
+    }
+    reconfigure(ReconfigureAll);
 
-    KWin::GLPlatform * const gl = KWin::GLPlatform::instance();
-    QByteArray varying, output, textureLookup;
+    QString shadersDir(QStringLiteral("shaders_110"));
+    const qint64 version = kVersionNumber(1, 40);
+    if (GLPlatform::instance()->glslVersion() >= version)
+        shadersDir = QStringLiteral("shaders_140");
 
-    if (!gl->isGLES()) {
-        const bool glsl_140 = gl->glslVersion() >= KWin::kVersionNumber(1, 40);
+    const QString shader = "qrc:/"+shadersDir+"/roundedwindow.frag";
+    const QString diff_shader = "qrc:/"+shadersDir+"/roundedwindow_diff.frag"
 
-        if (glsl_140)
-            stream << "#version 140\n\n";
+    QFile file_shader(shader);
+    QFile file_diff_shader(diff_shader);
 
-        varying       = glsl_140 ? QByteArrayLiteral("in")         : QByteArrayLiteral("varying");
-        textureLookup = glsl_140 ? QByteArrayLiteral("texture")    : QByteArrayLiteral("texture2D");
-        output        = glsl_140 ? QByteArrayLiteral("fragColor")  : QByteArrayLiteral("gl_FragColor");
+    if (!file_shader.open(QFile::ReadOnly) || !file_diff_shader.open(QFile::ReadOnly))
+    {
+        qDebug() << "Roundedwindow: no shaders found! Exiting...";
+        deleteLater();
+        return;
+    }
+
+    QByteArray frag = file_shader.readAll();
+    m_shader = ShaderManager::instance()->generateCustomShader(ShaderTrait::MapTexture, QByteArray(), frag);
+    file_shader.close();
+
+    QByteArray diff_frag = file_diff_shader.readAll();
+    m_diff_shader = ShaderManager::instance()->generateCustomShader(ShaderTrait::MapTexture, QByteArray(), diff_frag);
+    file_diff_shader.close();
+
+    if (m_shader->isValid() && m_diff_shader->isValid())
+    {
+        const int background_sampler = m_shader->uniformLocation("background_sampler");
+        const int shadow_sampler = m_shader->uniformLocation("shadow_sampler");
+        const int radius_sampler = m_shader->uniformLocation("radius_sampler");
+        const int sampler_size = m_shader->uniformLocation("sampler_size");
+        const int flip_shadow = m_shader->uniformLocation("flip_shadow");
+        ShaderManager::instance()->pushShader(m_shader);
+        m_shader->setUniform(flip_shadow, 4);
+        m_shader->setUniform(sampler_size, 3);
+        m_shader->setUniform(radius_sampler, 2);
+        m_shader->setUniform(shadow_sampler, 1);
+        m_shader->setUniform(background_sampler, 0);
+        ShaderManager::instance()->popShader();
+
+        const int shadow_sampler_diff = m_diff_shader->uniformLocation("shadow_sampler");
+        const int background_sampler_diff = m_diff_shader->uniformLocation("background_sampler");
+        const int corner_number_diff = m_diff_shader->uniformLocation("corner_number");
+        const int sampler_size_diff = m_diff_shader->uniformLocation("sampler_size");
+        ShaderManager::instance()->pushShader(m_diff_shader);
+        m_diff_shader->setUniform(sampler_size_diff, 3);
+        m_diff_shader->setUniform(corner_number_diff, 2);
+        m_diff_shader->setUniform(background_sampler_diff, 1);
+        m_diff_shader->setUniform(shadow_sampler_diff, 0);
+        ShaderManager::instance()->popShader();
+
+        const auto stackingOrder = effects->stackingOrder();
+        for (EffectWindow *window : stackingOrder) {
+            windowAdded(window);
+        }
+
+        connect(effects, &EffectsHandler::windowAdded, this, &RoundedwindowEffect::windowAdded);
+        connect(effects, &EffectsHandler::windowDeleted, this, &RoundedwindowEffect::windowDeleted);
+        connect(effects, &EffectsHandler::windowMaximizedStateChanged, this, &RoundedwindowEffect::windowMaximizedStateChanged);
+}
+    else
+        qDebug() << "Roundedwindow: no valid shaders found! Roundedwindow will not work.";
+}
+
+RoundedwindowEffect::~RoundedwindowEffect()
+{
+    if (m_shader)
+        delete m_shader;
+    if (m_diff_shader)
+        delete m_diff_shader;
+    for (int i = 0; i < NTex; ++i)
+    {
+        if (m_tex[i])
+            delete m_tex[i];
+        if (m_rect[i])
+            delete m_rect[i];
+        if (m_dark_rect[i])
+            delete m_dark_rect[i];
+    }
+    m_clip.clear();
+    m_diff.clear();
+    m_diff_update.clear();
+}
+
+void
+RoundedwindowEffect::windowDeleted(EffectWindow *w)
+{
+    m_managed.removeOne(w);
+    m_skipEffect.removeOne(w);
+    m_clip.remove(w);
+    m_diff.remove(w);
+    m_diff_update.remove(w);
+}
+
+static bool hasShadow(EffectWindow *w)
+{
+    if(w->expandedGeometry().size() != w->frameGeometry().size())
+        return true;
+    return false;
+}
+
+void
+RoundedwindowEffect::windowAdded(EffectWindow *w)
+{
+    if (m_managed.contains(w)
+            || w->windowType() == NET::OnScreenDisplay
+            || w->windowType() == NET::Dock
+            || w->windowType() == NET::Menu
+            || w->windowType() == NET::Desktop
+            || w->windowType() == NET::DropdownMenu
+            || w->windowType() == NET::Tooltip
+            || w->windowType() == NET::ComboBox
+            || w->windowType() == NET::Splash)
+        return;
+//    qDebug() << w->windowRole() << w->windowType() << w->windowClass();
+    if (!w->hasDecoration() && (w->windowClass().contains("plasma", Qt::CaseInsensitive)
+            || w->windowClass().contains("krunner", Qt::CaseInsensitive)
+            || w->windowClass().contains("latte-dock", Qt::CaseInsensitive)
+            || w->windowClass().contains("yoyo-launcher", Qt::CaseInsensitive)
+            || w->windowClass().contains("lattedock", Qt::CaseInsensitive)
+            || w->windowClass().contains("albert", Qt::CaseInsensitive)
+            || w->windowClass().contains("ksplash", Qt::CaseInsensitive)
+            || w->windowClass().contains("ksmserver", Qt::CaseInsensitive)
+            || (w->windowClass().contains("reaper", Qt::CaseInsensitive) && !hasShadow(w))))
+        return;
+
+    if(w->windowClass().contains("jetbrains", Qt::CaseInsensitive) && w->caption().contains(QRegularExpression ("win[0-9]+")))
+        return;
+
+    if (w->windowClass().contains("plasma", Qt::CaseInsensitive) && !w->isNormalWindow() && !w->isDialog() && !w->isModal())
+        return;
+
+    if (w->isDesktop()
+            || w->isFullScreen()
+            || w->isPopupMenu()
+            || w->isTooltip() 
+            || w->isSpecialWindow()
+            || w->isDropdownMenu()
+            || w->isPopupWindow()
+            || w->isLockScreen()
+            || w->isSplash())
+        return;
+
+    QRect maximized_area = effects->clientArea(MaximizeArea, w);
+    if (maximized_area == w->frameGeometry() && m_disabled_for_maximized)
+        m_skipEffect << w;
+
+    m_managed << w;
+    m_diff_update[w] = true;
+}
+
+void 
+RoundedwindowEffect::windowMaximizedStateChanged(EffectWindow *w, bool horizontal, bool vertical) 
+{
+    if (!m_disabled_for_maximized) return;
+
+    if ((horizontal == true) && (vertical == true)) {
+        m_skipEffect << w;
+        m_diff_update[w] = true;
     } else {
-        const bool glsl_es_300 = KWin::GLPlatform::instance()->glslVersion() >= KWin::kVersionNumber(3, 0);
+        m_skipEffect.removeOne(w);
+    }
+}
 
-        if (glsl_es_300)
-            stream << "#version 300 es\n\n";
+void
+RoundedwindowEffect::drawSquircle(QPainter *p, float size, int translate)
+{
+    QPainterPath squircle;
+    float squircleSize = size * 2 * (float(m_squircle_ratio)/24.0 * 0.25 + 0.8); //0.8 .. 1.05
+    float squircleEdge = (size * 2) - squircleSize;
 
-        // From the GLSL ES specification:
-        //
-        //     "The fragment language has no default precision qualifier for floating point types."
-        stream << "precision highp float;\n\n";
+    squircle.moveTo(size, 0);
+    squircle.cubicTo(QPointF(squircleSize, 0), QPointF(size * 2, squircleEdge), QPointF(size * 2, size));
+    squircle.cubicTo(QPointF(size * 2, squircleSize), QPointF(squircleSize, size * 2), QPointF(size, size * 2));
+    squircle.cubicTo(QPointF(squircleEdge, size * 2), QPointF(0, squircleSize), QPointF(0, size));
+    squircle.cubicTo(QPointF(0, squircleEdge), QPointF(squircleEdge, 0), QPointF(size, 0));
 
-        varying       = glsl_es_300 ? QByteArrayLiteral("in")         : QByteArrayLiteral("varying");
-        textureLookup = glsl_es_300 ? QByteArrayLiteral("texture")    : QByteArrayLiteral("texture2D");
-        output        = glsl_es_300 ? QByteArrayLiteral("fragColor")  : QByteArrayLiteral("gl_FragColor");
+    squircle.translate(translate,translate);
+
+    p->drawPolygon(squircle.toFillPolygon());
+}
+
+QImage
+RoundedwindowEffect::genMaskImg(int size, bool mask, bool outer_rect)
+{
+    QImage img(size*2, size*2, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    QRect r(img.rect());
+    int offset_decremented = m_shadow_offset-1;
+
+    if(mask) {
+        p.fillRect(img.rect(), Qt::black);
+        p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+        p.setPen(Qt::NoPen);
+        p.setBrush(Qt::black);
+        p.setRenderHint(QPainter::Antialiasing);
+        if (m_corners_type == SquircledCorners) {
+            drawSquircle(&p, (size-m_shadow_offset), m_shadow_offset);
+        } else {
+            p.drawEllipse(r.adjusted(m_shadow_offset,m_shadow_offset,-m_shadow_offset,-m_shadow_offset));
+        }
+    } else {
+        p.setPen(Qt::NoPen);
+        p.setRenderHint(QPainter::Antialiasing);
+        r.adjust(offset_decremented, offset_decremented, -offset_decremented, -offset_decremented);
+        if(outer_rect) {
+            if(m_dark_theme) 
+                p.setBrush(QColor(0, 0, 0, 240));
+            else 
+                p.setBrush(QColor(0, 0, 0, m_alpha));
+        } else {
+            p.setBrush(QColor(255, 255, 255, m_alpha));
+        }
+        if (m_corners_type == SquircledCorners) {
+            drawSquircle(&p, (size-offset_decremented), offset_decremented);
+        } else {
+            p.drawEllipse(r);
+        }
+        p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+        p.setBrush(Qt::black);
+        r.adjust(1, 1, -1, -1);
+        if (m_corners_type == SquircledCorners) {
+            drawSquircle(&p, (size-m_shadow_offset), m_shadow_offset);
+        } else {
+            p.drawEllipse(r);
+        }
+    }
+    p.end();
+
+    return img;
+}
+
+void
+RoundedwindowEffect::genMasks()
+{
+    for (int i = 0; i < NTex; ++i)
+        if (m_tex[i])
+            delete m_tex[i];
+
+    int size = m_size_scaled + m_shadow_offset;
+
+    QImage img = genMaskImg(size, true, false);
+    
+    m_tex[TopLeft] = new GLTexture(img.copy(0, 0, size, size), GL_TEXTURE_RECTANGLE);
+    m_tex[TopRight] = new GLTexture(img.copy(size, 0, size, size), GL_TEXTURE_RECTANGLE);
+    m_tex[BottomRight] = new GLTexture(img.copy(size, size, size, size), GL_TEXTURE_RECTANGLE);
+    m_tex[BottomLeft] = new GLTexture(img.copy(0, size, size, size), GL_TEXTURE_RECTANGLE);
+}
+
+void
+RoundedwindowEffect::genRect()
+{
+    for (int i = 0; i < NTex; ++i) {
+        if (m_rect[i])
+            delete m_rect[i];
+        if (m_dark_rect[i])
+            delete m_dark_rect[i];
     }
 
-    KWin::ShaderTraits traits;
+    int size = m_size_scaled + (m_shadow_offset-1);
 
-    traits |= KWin::ShaderTrait::MapTexture;
-    traits |= KWin::ShaderTrait::Modulate;
-    traits |= KWin::ShaderTrait::AdjustSaturation;
+    QImage img = genMaskImg(size, false, false);
 
-    if (traits & KWin::ShaderTrait::MapTexture) {
-        stream << "uniform sampler2D sampler;\n";
+    m_rect[TopLeft] = new GLTexture(img.copy(0, 0, size, size));
+    m_rect[TopRight] = new GLTexture(img.copy(size, 0, size, size));
+    m_rect[BottomRight] = new GLTexture(img.copy(size, size, size, size));
+    m_rect[BottomLeft] = new GLTexture(img.copy(0, size, size, size));
 
-        // custom texture
-        stream << "uniform sampler2D topleft;\n";
-        stream << "uniform sampler2D topright;\n";
-        stream << "uniform sampler2D bottomleft;\n";
-        stream << "uniform sampler2D bottomright;\n";
+    size = m_size_scaled + m_shadow_offset;
+    QImage img2 = genMaskImg(size, false, true);
 
-        // scale
-        stream << "uniform vec2 scale;\n";
-        stream << "uniform vec2 scale1;\n";
-        stream << "uniform vec2 scale2;\n";
-        stream << "uniform vec2 scale3;\n";
+    m_dark_rect[TopLeft] = new GLTexture(img2.copy(0, 0, size, size));
+    m_dark_rect[TopRight] = new GLTexture(img2.copy(size, 0, size, size));
+    m_dark_rect[BottomRight] = new GLTexture(img2.copy(size, size, size, size));
+    m_dark_rect[BottomLeft] = new GLTexture(img2.copy(0, size, size, size));
+}
 
-        if (traits & KWin::ShaderTrait::Modulate)
-            stream << "uniform vec4 modulation;\n";
-        if (traits & KWin::ShaderTrait::AdjustSaturation)
-            stream << "uniform float saturation;\n";
+void
+RoundedwindowEffect::setRoundness(const int r)
+{
+    m_size = r;
+    m_size_scaled = r*m_scale;
+    m_corner = QSize(m_size+(m_shadow_offset-1), m_size+(m_shadow_offset-1));
+    genMasks();
+    genRect();
+}
 
-        stream << "\n" << varying << " vec2 texcoord0;\n";
-
-    } else if (traits & KWin::ShaderTrait::UniformColor)
-        stream << "uniform vec4 geometryColor;\n";
-
-    #if KWIN_EFFECT_API_VERSION < 233
-    if (traits & KWin::ShaderTrait::ClampTexture) {
-        stream << "uniform vec4 textureClamp;\n";
+void
+RoundedwindowEffect::reconfigure(ReconfigureFlags flags)
+{
+    Q_UNUSED(flags)
+    KConfigGroup conf = KSharedConfig::openConfig("roundedwindow.conf")->group("General");
+    m_alpha = int(conf.readEntry("alpha", 15)*2.55);
+    m_outline = conf.readEntry("outline", false);
+    m_dark_theme = conf.readEntry("dark_theme", false);
+    m_disabled_for_maximized = conf.readEntry("disabled_for_maximized", false);
+    m_corners_type = conf.readEntry("corners_type", int(RoundedCorners));
+    m_squircle_ratio = int(conf.readEntry("squircle_ratio", 12));
+    m_shadow_offset = int(conf.readEntry("shadow_offset", 2));
+    m_roundness = int(conf.readEntry("roundness", 5));
+    if(m_shadow_offset>=m_roundness) {
+        m_shadow_offset = m_roundness-1;
     }
+    int roundness = m_roundness;
+    if(m_scale!=1.0) {
+        roundness /= m_scale;
+    }
+    setRoundness(roundness);
+}
+
+void
+RoundedwindowEffect::prePaintWindow(EffectWindow *w, WindowPrePaintData &data, std::chrono::milliseconds time)
+{
+    if (!isValidWindow(w))
+    {
+        effects->prePaintWindow(w, data, time);
+        return;
+    }
+
+    const QRect s(effects->virtualScreenGeometry());
+    const QRect geo(w->frameGeometry());
+    const QRegion exp_geo(w->expandedGeometry());
+    const QRegion shadow = exp_geo - geo;
+
+    if(shadow.intersects(data.paint) && geo.width() != s.width()) {
+        m_diff_update[w] = true;
+        //qDebug() << "shadow repainted";
+    }
+
+    int offset_decremented = m_shadow_offset-1;
+
+    const QRect rect[NTex] =
+    {
+        QRect(geo.topLeft()-QPoint(offset_decremented,offset_decremented), m_corner),
+        QRect(geo.topRight()-QPoint(m_size-offset_decremented, offset_decremented), m_corner),
+        QRect(geo.bottomRight()-QPoint(m_size-offset_decremented, m_size-offset_decremented), m_corner),
+        QRect(geo.bottomLeft()-QPoint(offset_decremented, m_size-offset_decremented), m_corner)
+    };
+    QRegion repaintRegion(QRegion(geo.adjusted(-m_shadow_offset, -m_shadow_offset, m_shadow_offset, m_shadow_offset))-geo.adjusted(m_shadow_offset, m_shadow_offset, -m_shadow_offset, -m_shadow_offset));
+
+    for (int i = 0; i < NTex; ++i)
+    {
+        repaintRegion += rect[i];
+    }
+
+    QRegion clip = QRegion();
+    QRegion clip_scaled = QRegion();
+
+    const auto stackingOrder = effects->stackingOrder();
+    bool bottom_w = true;
+    for (EffectWindow *window : stackingOrder) {
+        if(!window->isVisible()
+            || window->isDeleted()
+            || window->opacity() != 1.0
+            || window->isUserMove()
+            || window->isUserResize()
+            || window->windowClass().contains("latte-dock", Qt::CaseInsensitive)
+            || window->windowClass().contains("lattedock", Qt::CaseInsensitive)
+            || window->windowClass().contains("peek", Qt::CaseInsensitive)
+            || (bottom_w && window != w)
+        ) continue;
+
+        const void *addedGrab = window->data(WindowAddedGrabRole).value<void *>();
+        if (addedGrab) continue;
+        const void *unminimizedGrab = window->data(WindowUnminimizedGrabRole).value<void *>();
+        if (unminimizedGrab) continue;
+
+        bottom_w = false;
+        if(window != w) {
+            /*const QRect r = window->frameGeometry().adjusted(m_size, m_size, -m_size, -m_size);
+            clip += r;
+            clip_scaled += scale(r);*/
+
+            QRect w_geo = window->frameGeometry();
+
+            clip += w_geo;
+            clip_scaled += scale(w_geo);
+
+            const QRect w_rect[NTex] =
+            {
+                QRect(w_geo.topLeft()-QPoint(offset_decremented,offset_decremented), m_corner),
+                QRect(w_geo.topRight()-QPoint(m_size-offset_decremented, offset_decremented), m_corner),
+                QRect(w_geo.bottomRight()-QPoint(m_size-offset_decremented, m_size-offset_decremented), m_corner),
+                QRect(w_geo.bottomLeft()-QPoint(offset_decremented, m_size-offset_decremented), m_corner)
+            };
+
+            for (int i = 0; i < NTex; ++i)
+            {
+                clip -= w_rect[i];
+                clip_scaled -= scale(w_rect[i]);
+            }
+        }
+    }
+
+    if(m_clip[w] != clip_scaled) {
+        m_clip[w] = clip_scaled;
+        m_diff_update[w] = true;
+    }
+
+    repaintRegion -= clip;
+
+    for (int i = 0; i < NTex; ++i)
+    {
+        if(!clip.contains(rect[i])) {
+            repaintRegion += rect[i];
+            clip -= rect[i];
+            clip_scaled -= scale(rect[i]);
+        }
+    }
+
+#if KWIN_EFFECT_API_VERSION < 234
+    data.clip -= repaintRegion;
+#else
+    data.opaque -= repaintRegion;
+#endif
+    data.paint += repaintRegion;
+
+    if(shadow.isEmpty()) {
+        data.paint = infiniteRegion();
+        GLTexture tex = GLTexture(GL_TEXTURE_RECTANGLE);
+        m_diff[w] = QList<GLTexture>();
+        m_diff_update[w] = false;
+        for (int i = 0; i < NTex; ++i)
+        {
+            m_diff[w].append(tex);
+        }
+    }
+
+    effects->prePaintWindow(w, data, time);
+}
+
+void
+RoundedwindowEffect::paintScreen(int mask, const QRegion &region, ScreenPaintData &data)
+{
+    effects->paintScreen(mask, region, data);
+#if KWIN_EFFECT_API_VERSION < 234
+    qreal scale = GLRenderTarget::virtualScreenScale();
+#else
+    qreal scale = effects->renderTargetScale();
+#endif
+    qreal zoom = data.xScale();
+    if(scale*zoom != m_scale) {
+        if(zoom == 1.0 && scale>m_scale) {
+            m_scale = scale*zoom;
+            int roundness = m_roundness;
+            if(m_scale!=1.0) {
+                roundness /= m_scale;
+            }
+            setRoundness(roundness);
+        } else {
+            m_scale = scale*zoom;
+        }
+    }
+}
+
+bool
+RoundedwindowEffect::isValidWindow(EffectWindow *w)
+{
+    if (!m_shader->isValid()
+            || !w->isOnCurrentDesktop()
+            || !m_managed.contains(w)
+        /*#if KWIN_EFFECT_API_VERSION < 234
+            || !w->isPaintingEnabled()
+        #endif*/
+            || effects->hasActiveFullScreenEffect()
+            || w->isFullScreen()
+            || w->isDesktop()
+            || w->isSpecialWindow()
+            || m_skipEffect.contains(w))
+    {
+        return false;
+    }
+    return true;
+}
+
+
+void
+RoundedwindowEffect::paintWindow(EffectWindow *w, int mask, QRegion region, WindowPaintData &data)
+{
+    if (!isValidWindow(w) || (mask & (PAINT_WINDOW_TRANSFORMED|PAINT_SCREEN_WITH_TRANSFORMED_WINDOWS)))
+    {
+        effects->paintWindow(w, mask, region, data);
+        return;
+    }
+
+    bool use_outline = m_outline;
+    if(mask & PAINT_WINDOW_TRANSFORMED) {
+        use_outline = false;
+    }
+
+#if KWIN_EFFECT_API_VERSION < 234
+    const QRect screen = GLRenderTarget::virtualScreenGeometry();
+#else
+    const QRect screen = effects->renderTargetRect();
+#endif
+    qreal xTranslation = data.xTranslation() + screen.x();
+    qreal yTranslation = data.yTranslation() + effects->virtualScreenSize().height() - screen.height() - screen.y();
+    
+    //map the corners
+    const QRect geo(w->frameGeometry());
+    const QRect geo_scaled = scale(geo);
+    const QSize size_scaled(m_size_scaled+m_shadow_offset, m_size_scaled+m_shadow_offset);
+    const QRect big_rect_scaled[NTex] =
+    {
+        QRect(geo_scaled.topLeft()-QPoint(m_shadow_offset,m_shadow_offset), size_scaled),
+        QRect(geo_scaled.topRight()-QPoint(m_size_scaled-1, m_shadow_offset), size_scaled),
+        QRect(geo_scaled.bottomRight()-QPoint(m_size_scaled-1, m_size_scaled-1), size_scaled),
+        QRect(geo_scaled.bottomLeft()-QPoint(m_shadow_offset, m_size_scaled-1), size_scaled)
+    };
+
+    const QRect s(effects->virtualScreenGeometry());
+    const QRect s_scaled = scale(s);
+
+    //check if one of the corners is out of screen
+    bool out_of_screen = ! (
+        s_scaled.contains(big_rect_scaled[TopLeft], true)
+        && s_scaled.contains(big_rect_scaled[TopRight], true)
+        && s_scaled.contains(big_rect_scaled[BottomRight], true)
+        && s_scaled.contains(big_rect_scaled[BottomLeft], true)
+    );
+
+    if(w->isDeleted() && out_of_screen) {
+        effects->paintWindow(w, mask, region, data);
+        return;
+    }
+
+    //copy the empty corner regions
+    QList<GLTexture> empty_corners_tex = getTexRegions(w, big_rect_scaled, s_scaled, NTex, xTranslation, yTranslation);
+
+    //paint the actual window
+    effects->paintWindow(w, mask, region, data);
+
+    //get shadows
+    getShadowDiffs(w, big_rect_scaled, empty_corners_tex, xTranslation, yTranslation, out_of_screen);
+
+    //Draw rounded corners with shadows    
+    glEnable(GL_BLEND);
+    const int mvpMatrixLocation = m_shader->uniformLocation("modelViewProjectionMatrix");
+    const int samplerSizeLocation = m_shader->uniformLocation("sampler_size");
+    const int flipShadowLocation = m_shader->uniformLocation("flip_shadow");
+    ShaderManager *sm = ShaderManager::instance();
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    sm->pushShader(m_shader);
+    for (int i = 0; i < NTex; ++i)
+    {
+        if(m_clip[w].contains(big_rect_scaled[i].adjusted(m_size_scaled, m_size_scaled, -m_size_scaled, -m_size_scaled))) {
+            continue;
+        }
+
+        QMatrix4x4 mvp = data.screenProjectionMatrix();
+        mvp.scale(1.0/m_scale);
+        mvp.translate(big_rect_scaled[i].x(), big_rect_scaled[i].y());
+        QVector2D samplerSize = QVector2D(big_rect_scaled[i].width(), big_rect_scaled[i].height());
+        m_shader->setUniform(mvpMatrixLocation, mvp);
+        m_shader->setUniform(samplerSizeLocation, samplerSize);
+        m_shader->setUniform(flipShadowLocation, out_of_screen && (i==1 || i==2));
+        glActiveTexture(GL_TEXTURE2);
+        m_tex[i]->bind();
+        glActiveTexture(GL_TEXTURE1);
+        m_diff[w][i].bind();
+        glActiveTexture(GL_TEXTURE0);
+        empty_corners_tex[i].bind();
+        empty_corners_tex[i].render(region, big_rect_scaled[i]);
+        empty_corners_tex[i].unbind();
+        m_diff[w][i].unbind();
+        m_tex[i]->unbind();
+    }
+    sm->popShader();
+
+    // outline
+    if (use_outline && data.brightness() == 1.0 && data.crossFadeProgress() == 1.0)
+    {
+        const float o(data.opacity());
+
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+
+        //Outer corners
+        GLShader *shader = ShaderManager::instance()->pushShader(ShaderTrait::MapTexture|ShaderTrait::UniformColor|ShaderTrait::Modulate);
+        shader->setUniform(GLShader::ModulationConstant, QVector4D(o, o, o, o));
+        for (int i = 0; i < NTex; ++i)
+        {
+            if(m_clip[w].contains(big_rect_scaled[i].adjusted(m_size_scaled, m_size_scaled, -m_size_scaled, -m_size_scaled))) {
+                continue;
+            }
+
+            QMatrix4x4 modelViewProjection = data.screenProjectionMatrix();
+            modelViewProjection.scale(1.0/m_scale);
+            modelViewProjection.translate(big_rect_scaled[i].x(), big_rect_scaled[i].y());
+            shader->setUniform("modelViewProjectionMatrix", modelViewProjection);
+            m_dark_rect[i]->bind();
+            m_dark_rect[i]->render(region, big_rect_scaled[i]);
+            m_dark_rect[i]->unbind();
+        
+        }
+        ShaderManager::instance()->popShader();
+
+        //Inner corners
+        int offset_decremented = m_shadow_offset-1;
+        const QSize i_size = QSize(m_size_scaled+offset_decremented, m_size_scaled+offset_decremented);
+        const QRect rect_scaled[NTex] =
+        {
+            QRect(geo_scaled.topLeft()-QPoint(offset_decremented,offset_decremented), i_size),
+            QRect(geo_scaled.topRight()-QPoint(m_size_scaled-1, offset_decremented), i_size),
+            QRect(geo_scaled.bottomRight()-QPoint(m_size_scaled-1, m_size_scaled-1), i_size),
+            QRect(geo_scaled.bottomLeft()-QPoint(offset_decremented, m_size_scaled-1), i_size)
+        };
+
+        shader = ShaderManager::instance()->pushShader(ShaderTrait::MapTexture|ShaderTrait::UniformColor|ShaderTrait::Modulate);
+        shader->setUniform(GLShader::ModulationConstant, QVector4D(o, o, o, o));
+
+        for (int i = 0; i < NTex; ++i)
+        {
+            if(m_clip[w].contains(rect_scaled[i].adjusted(m_size_scaled, m_size_scaled, -m_size_scaled, -m_size_scaled))) {
+                continue;
+            }
+
+            QMatrix4x4 modelViewProjection = data.screenProjectionMatrix();
+            modelViewProjection.scale(1.0/m_scale);
+            modelViewProjection.translate(rect_scaled[i].x(), rect_scaled[i].y());
+            shader->setUniform("modelViewProjectionMatrix", modelViewProjection);
+            m_rect[i]->bind();
+            m_rect[i]->render(region, rect_scaled[i]);
+            m_rect[i]->unbind();
+        }
+        ShaderManager::instance()->popShader();
+
+        QRect geo_scaled = scale(geo);
+        
+        QRegion reg = geo_scaled;
+        QMatrix4x4 mvp = data.screenProjectionMatrix();
+        mvp.scale(1.0/m_scale);
+
+        //Outline
+        shader = ShaderManager::instance()->pushShader(ShaderTrait::UniformColor);
+        shader->setUniform("modelViewProjectionMatrix", mvp);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        reg -= QRegion(geo_scaled.adjusted(1, 1, -1, -1));
+        reg -= m_clip[w];
+        for (int i = 0; i < NTex; ++i)
+            reg -= rect_scaled[i];
+        fillRegion(reg, QColor(255, 255, 255, m_alpha*data.opacity()));
+        ShaderManager::instance()->popShader();
+
+        //Borderline
+        shader = ShaderManager::instance()->pushShader(ShaderTrait::UniformColor);
+        shader->setUniform("modelViewProjectionMatrix", mvp);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        reg = QRegion(geo_scaled.adjusted(-1, -1, 1, 1));
+        reg -= geo_scaled;
+        reg -= m_clip[w];
+        for (int i = 0; i < NTex; ++i)
+            reg -= rect_scaled[i];
+        if(m_dark_theme)
+            fillRegion(reg, QColor(0, 0, 0, 255*data.opacity()));
+        else
+            fillRegion(reg, QColor(0, 0, 0, m_alpha*data.opacity()));
+        ShaderManager::instance()->popShader();
+    }
+
+    glDisable(GL_BLEND);
+}
+
+void
+RoundedwindowEffect::fillRegion(const QRegion &reg, const QColor &c)
+{
+    GLVertexBuffer *vbo = GLVertexBuffer::streamingBuffer();
+    vbo->reset();
+    vbo->setUseColor(true);
+    vbo->setColor(c);
+    QVector<float> verts;
+    for (const QRect &r : reg)
+    {
+        verts << r.x() + r.width() << r.y();
+        verts << r.x() << r.y();
+        verts << r.x() << r.y() + r.height();
+        verts << r.x() << r.y() + r.height();
+        verts << r.x() + r.width() << r.y() + r.height();
+        verts << r.x() + r.width() << r.y();
+    }
+    vbo->setData(verts.count() / 2, 2, verts.data(), NULL);
+    vbo->render(GL_TRIANGLES);
+}
+
+void
+RoundedwindowEffect::getShadowDiffs(EffectWindow *w, const QRect* rect, QList<GLTexture> &empty_corners_tex, qreal xTranslation, qreal yTranslation, bool out_of_screen)
+{
+    // if we already have diff cache and there's no need to update it, return
+    if(m_diff.contains(w) && (m_diff_update.contains(w) && !m_diff_update[w])) return;
+
+    //else do 1 offscreen paint if needed and get the cache for topleft and bottomleft corners
+    m_diff_update[w] = false;
+    const QRect w_exgeo = w->expandedGeometry();
+    const QRect w_exgeo_scaled = scale(w_exgeo);
+
+    //map corners
+    const QRect r4[NTex] =
+    {
+        QRect(QPoint(rect[TopLeft].x()-w_exgeo_scaled.x(),rect[TopLeft].y()-w_exgeo_scaled.y()), rect[TopLeft].size()),
+        QRect(QPoint(rect[TopRight].x()-w_exgeo_scaled.x(),rect[TopRight].y()-w_exgeo_scaled.y()), rect[TopRight].size()),
+        QRect(QPoint(rect[BottomRight].x()-w_exgeo_scaled.x(),rect[BottomRight].y()-w_exgeo_scaled.y()), rect[BottomRight].size()),
+        QRect(QPoint(rect[BottomLeft].x()-w_exgeo_scaled.x(),rect[BottomLeft].y()-w_exgeo_scaled.y()), rect[BottomLeft].size())
+    };
+    const QRect r2[NShad] =
+    {
+        r4[TopLeft],
+        r4[BottomLeft]
+    };
+
+    const QRect s_geo = effects->virtualScreenGeometry();
+    const QRect s_geo_scaled = scale(s_geo);
+    QList<GLTexture> shadow_tex;
+    //if window is not out of screen, get shadow samplers from the buffer for 4 corners
+    if(!out_of_screen) {
+        shadow_tex = getTexRegions(w, rect, s_geo_scaled, NTex, xTranslation, yTranslation, true);
+    //else do offscreen render and get shadow samplers from 2 corners
+    } else {
+        QImage img(w_exgeo_scaled.width(), w_exgeo_scaled.height(), QImage::Format_ARGB32_Premultiplied);
+        img.fill(Qt::white);
+        GLTexture target = GLTexture(img.copy(0, 0, w_exgeo_scaled.width(), w_exgeo_scaled.height()), GL_TEXTURE_RECTANGLE);
+        
+    #if KWIN_EFFECT_API_VERSION < 234
+        GLRenderTarget renderTarget(target);
+        GLRenderTarget::pushRenderTarget(&renderTarget);
+    #else
+        GLFramebuffer renderTarget(&target);
+        GLFramebuffer::pushFramebuffer(&renderTarget);
     #endif
 
-    if (output != QByteArrayLiteral("gl_FragColor"))
-        stream << "\nout vec4 " << output << ";\n";
+    #if KWIN_EFFECT_API_VERSION < 234
+        WindowPaintData d(w);
+    #else
+        WindowPaintData d;
+    #endif
+        d += QPoint(-w_exgeo.x(), -w_exgeo.y());
+        QMatrix4x4 projection;
+        projection.ortho(QRect(0, 0, w_exgeo.width(), w_exgeo.height()));
+        d.setProjectionMatrix(projection);
 
-    stream << "\nvoid main(void)\n{\n";
-    if (traits & KWin::ShaderTrait::MapTexture) {
-        stream << "vec2 texcoordC = texcoord0;\n";
+        int mask = PAINT_WINDOW_TRANSFORMED | PAINT_WINDOW_TRANSLUCENT;
 
+    #if KWIN_EFFECT_API_VERSION < 234
+        GLVertexBuffer::setVirtualScreenGeometry(QRect(0, 0, w_exgeo_scaled.width(), w_exgeo_scaled.height()));
+    #endif
 
-        stream << "    " << "vec4 var;\n";
-        stream << "if (texcoordC.x < 0.5) {\n"
-                  "    if (texcoordC.y < 0.5) {\n"
-                  "        vec2 cornerCoord = vec2(texcoordC.x * scale.x, texcoordC.y * scale.y);\n"
-                  "        var = " << textureLookup << "(topleft, cornerCoord);\n"
-                  "    } else {\n"
-                  "        vec2 cornerCoordBL = vec2(texcoordC.x * scale2.x, (1.0 - texcoordC.y) * scale2.y);\n"
-                  "        var = " << textureLookup << "(bottomleft, cornerCoordBL);\n"
-                  "    }\n"
-                  "} else {\n"
-                  "    if (texcoordC.y < 0.5) {\n"
-                  "        vec2 cornerCoordTR = vec2((1.0 - texcoordC.x) * scale1.x, texcoordC.y * scale1.y);\n"
-                  "        var = " << textureLookup << "(topright, cornerCoordTR);\n"
-                  "    } else {\n"
-                  "        vec2 cornerCoordBR = vec2((1.0 - texcoordC.x) * scale3.x, (1.0 - texcoordC.y) * scale3.y);\n"
-                  "        var = " << textureLookup << "(bottomright, cornerCoordBR);\n"
-                  "    }\n"
-                  "}\n";
+        effects->drawWindow(w, mask, infiniteRegion(), d);
 
-        stream << "    vec4 texel = " << textureLookup << "(sampler, texcoordC);\n";
-        if (traits & KWin::ShaderTrait::Modulate)
-            stream << "    texel *= modulation;\n";
-        if (traits & KWin::ShaderTrait::AdjustSaturation)
-            stream << "    texel.rgb = mix(vec3(dot(texel.rgb, vec3(0.2126, 0.7152, 0.0722))), texel.rgb, saturation);\n";
+        //get shadow sampler from 2 corners
+        shadow_tex = getTexRegions(w, r2, w_exgeo_scaled, NShad, 0.0, 0.0, true);
+    #if KWIN_EFFECT_API_VERSION < 234
+        GLRenderTarget::popRenderTarget();
+    #else
+        GLFramebuffer::popFramebuffer();
+    #endif
+    }
 
-        stream << "    " << output << " = texel * var;\n";
-    } else if (traits & KWin::ShaderTrait::UniformColor)
-        stream << "    " << output << " = geometryColor;\n";
+    m_diff[w] = QList<GLTexture>();
 
-    stream << "}";
-    stream.flush();
+    const int mvpMatrixLocation = m_diff_shader ->uniformLocation("modelViewProjectionMatrix");
+    const int cornerNumberLocation = m_diff_shader->uniformLocation("corner_number");
+    const int samplerSizeLocation = m_diff_shader->uniformLocation("sampler_size");
+    ShaderManager *sm = ShaderManager::instance();
+    sm->pushShader(m_diff_shader);
+    int n;
+    if(out_of_screen) n = NShad;
+    else n = NTex;
+    const QRect *r = out_of_screen ? r2 : r4;
+    GLTexture white_tex = GLTexture(GL_TEXTURE_RECTANGLE);
+    if(out_of_screen) {
+        QImage white_img(r[0].width(), r[0].height(), QImage::Format_ARGB32_Premultiplied);
+        white_img.fill(Qt::white);
+        white_tex = GLTexture(white_img.copy(0, 0, r[0].width(), r[0].height()), GL_TEXTURE_RECTANGLE);
+    }
+    for (int i = 0; i < n; ++i)
+    {
+        GLTexture target = GLTexture(GL_RGBA8, w_exgeo_scaled.size());
+        
+    #if KWIN_EFFECT_API_VERSION < 234
+        GLRenderTarget renderTarget(target);
+        GLRenderTarget::pushRenderTarget(&renderTarget);
+    #else
+        GLFramebuffer renderTarget(&target);
+        GLFramebuffer::pushFramebuffer(&renderTarget);
+    #endif
 
-    auto shader = KWin::ShaderManager::instance()->generateCustomShader(traits, QByteArray(), source);
-    //shaders.insert(direction, shader);
-    return shader;
+        QMatrix4x4 mvp;
+        mvp.ortho(QRect(0, 0, w_exgeo_scaled.width(), w_exgeo_scaled.height()));
+        QVector2D samplerSize = QVector2D(r[i].width(), r[i].height());
+        mvp.translate(r[i].x(), r[i].y());
+        m_diff_shader->setUniform(mvpMatrixLocation, mvp);
+        m_diff_shader->setUniform(samplerSizeLocation, samplerSize);
+        m_diff_shader->setUniform(cornerNumberLocation, out_of_screen? i*3 : i);
+        glActiveTexture(GL_TEXTURE1);
+        if(!out_of_screen) 
+            empty_corners_tex[i].bind();
+        else
+            white_tex.bind();
+        glActiveTexture(GL_TEXTURE0);
+        shadow_tex[i].bind();
+        shadow_tex[i].render(r[i], r[i]);
+        shadow_tex[i].unbind();
+        if(!out_of_screen) {
+            empty_corners_tex[i].unbind();
+            m_diff[w].append(copyTexSubImage(w_exgeo_scaled, r[i]));
+        } else {
+            white_tex.unbind();
+            GLTexture t = copyTexSubImage(w_exgeo_scaled, r[i]);
+            m_diff[w].append(t);
+            m_diff[w].append(t);
+        }
+    #if KWIN_EFFECT_API_VERSION < 234
+        GLRenderTarget::popRenderTarget();
+    #else
+        GLFramebuffer::popFramebuffer();
+    #endif
+    }
+    sm->popShader();
 }
 
-static KWin::GLTexture *getTexture(int borderRadius)
+QList<GLTexture>
+RoundedwindowEffect::getTexRegions(EffectWindow *w, const QRect* rect, const QRect &geo, int nTex, qreal xTranslation, qreal yTranslation, bool force)
 {
-    QPixmap pix(QSize(borderRadius, borderRadius));
-    pix.fill(Qt::transparent);
-    QPainter painter(&pix);
-    painter.setRenderHint(QPainter::Antialiasing);
-    QPainterPath path;
-    path.moveTo(borderRadius, 0);
-    path.arcTo(0, 0, 2 * borderRadius, 2 * borderRadius, 90, 90);
-    path.lineTo(borderRadius, borderRadius);
-    path.lineTo(borderRadius, 0);
-    painter.fillPath(path, Qt::white);
+    QList<GLTexture> sample_tex;
 
-    auto texture = new KWin::GLTexture(pix);
-    texture->setFilter(GL_LINEAR);
-    texture->setWrapMode(GL_CLAMP_TO_BORDER);
+    for (int i = 0; i < nTex; ++i)
+    {
+        if(m_clip[w].contains(rect[i].adjusted(m_size_scaled, m_size_scaled, -m_size_scaled, -m_size_scaled)) && !force) {
+            sample_tex.append(GLTexture(GL_TEXTURE_RECTANGLE));
+            continue;
+        }
 
-    return texture;
+        sample_tex.append(copyTexSubImage(geo, rect[i], xTranslation, yTranslation));
+    }
+
+    return sample_tex;
 }
 
-RoundedWindow::RoundedWindow(QObject *, const QVariantList &)
-    : KWin::Effect()
+GLTexture
+RoundedwindowEffect::copyTexSubImage(const QRect &geo, const QRect &rect, qreal xTranslation, qreal yTranslation)
 {
-    QSettings settings(QSettings::UserScope, "yoyoos", "theme");
-    qreal devicePixelRatio = settings.value("PixelRatio", 1.0).toReal();
-    m_frameRadius = 11 * devicePixelRatio;
-
-    setDepthfunc = (SetDepth) QLibrary::resolve("kwin.so." + qApp->applicationVersion(), "_ZN4KWin8Toplevel8setDepthEi");
-
-    QString name = "_NET_WM_STATE";
-    xcb_intern_atom_cookie_t cookie = xcb_intern_atom_unchecked(KWin::connection(), false, name.length(), name.toUtf8());
-    xcb_intern_atom_reply_t *reply = xcb_intern_atom_reply(KWin::connection(), cookie, nullptr);
-    m_netWMStateAtom = reply->atom;
-    free(reply);
-
-    name = "_NET_WM_STATE_MAXIMIZED_HORZ";
-    cookie = xcb_intern_atom_unchecked(KWin::connection(), false, name.length(), name.toUtf8());
-    reply = xcb_intern_atom_reply(KWin::connection(), cookie, nullptr);
-    m_netWMStateMaxHorzAtom = reply->atom;
-    free(reply);
-
-    name = "_NET_WM_STATE_MAXIMIZED_VERT";
-    cookie = xcb_intern_atom_unchecked(KWin::connection(), false, name.length(), name.toUtf8());
-    reply = xcb_intern_atom_reply(KWin::connection(), cookie, nullptr);
-    m_netWMStateMaxVertAtom = reply->atom;
-    free(reply);
-
-    m_shader = getShader();
-    m_texure = getTexture(m_frameRadius);
+    QImage img(rect.width(), rect.height(), QImage::Format_ARGB32_Premultiplied);
+    GLTexture t = GLTexture(img, GL_TEXTURE_RECTANGLE);
+    t.bind();
+    glCopyTexSubImage2D(
+        GL_TEXTURE_RECTANGLE, 
+        0, 
+        0, 
+        0, 
+        rect.x() - xTranslation,
+        geo.height() - rect.y() - rect.height() - yTranslation,
+        rect.width(),
+        rect.height()
+    );
+    t.unbind();
+    return t;
 }
 
-RoundedWindow::~RoundedWindow()
+QRect
+RoundedwindowEffect::scale(const QRect rect)
 {
+    return QRect(
+        rect.x()*m_scale,
+        rect.y()*m_scale,
+        rect.width()*m_scale,
+        rect.height()*m_scale
+    );
 }
 
-bool RoundedWindow::supported()
-{
-    const QByteArray desktop = qgetenv("XDG_CURRENT_DESKTOP");
-
-    if (desktop.isEmpty())
-        return false;
-
-    return desktop == "Yoyo" && KWin::effects->isOpenGLCompositing() && KWin::GLRenderTarget::supported();
-}
-
-bool RoundedWindow::enabledByDefault()
+bool
+RoundedwindowEffect::enabledByDefault()
 {
     return supported();
 }
 
-#if KWIN_EFFECT_API_VERSION < 233
-bool RoundedWindow::hasShadow(KWin::WindowQuadList &qds)
+bool
+RoundedwindowEffect::supported()
 {
-    for (int i = 0; i < qds.count(); ++i)
-        if (qds.at(i).type() == KWin::WindowQuadShadow)
-            return true;
-
-    return false;
-}
+#if KWIN_EFFECT_API_VERSION < 234
+    return effects->isOpenGLCompositing() && GLRenderTarget::supported();
+#else
+    return effects->isOpenGLCompositing() && GLFramebuffer::supported();
 #endif
-
-bool RoundedWindow::isMaximized(KWin::EffectWindow *w)
-{
-    if (m_netWMStateAtom == 0)
-        return false;
-
-    QByteArray rawAtomData = w->readProperty(m_netWMStateAtom, XCB_ATOM_ATOM, 32);
-    if (!rawAtomData.isEmpty()) {
-        for (int i = 0; i < rawAtomData.length(); i += sizeof(xcb_atom_t)) {
-            xcb_atom_t atom = static_cast<xcb_atom_t>(rawAtomData.data()[i]) + 512;
-            if (atom == m_netWMStateMaxHorzAtom || atom == m_netWMStateMaxVertAtom)
-                return true;
-        }
-    }
-
-    return false;
 }
 
-void RoundedWindow::drawWindow(KWin::EffectWindow *w, int mask, const QRegion &region, KWin::WindowPaintData &data)
-{
-    if (!w->isPaintingEnabled() || ((mask & PAINT_WINDOW_LANCZOS))) {
-        return KWin::Effect::drawWindow(w, mask, region, data);
-    }
+#include "roundedwindow.moc"
 
-    if (isMaximized(w)) {
-        return KWin::Effect::drawWindow(w, mask, region, data);
-    }
 
-    if (KWin::effects->hasActiveFullScreenEffect() || w->isFullScreen()) {
-        return KWin::Effect::drawWindow(w, mask, region, data);
-    }
-
-    if (w->isDesktop()
-            || w->isMenu()
-            || w->isDock()
-            || w->isPopupWindow()
-            || w->isPopupMenu()
-            #if KWIN_EFFECT_API_VERSION < 233
-                 || !hasShadow(data.quads)
-            #endif
-        ) {
-        if (!allowList.contains(w->windowClass()))
-            return KWin::Effect::drawWindow(w, mask, region, data);
-    }
-
-    // 设置 alpha 通道混合
-    if (!w->hasAlpha()) {
-        if (setDepthfunc) {
-            setDepthfunc(w->parent(), 32);
-        }
-    }
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-
-    auto textureTopLeft = m_texure;
-    glActiveTexture(GL_TEXTURE10);
-    textureTopLeft->bind();
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
-    glActiveTexture(GL_TEXTURE0);
-
-    auto textureTopRight = m_texure;
-    glActiveTexture(GL_TEXTURE11);
-    textureTopRight->bind();
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
-    glActiveTexture(GL_TEXTURE0);
-
-    auto textureBottomLeft = m_texure;
-    glActiveTexture(GL_TEXTURE12);
-    textureBottomLeft->bind();
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
-    glActiveTexture(GL_TEXTURE0);
-
-    auto textureBottomRight = m_texure;
-    glActiveTexture(GL_TEXTURE13);
-    textureBottomRight->bind();
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
-    glActiveTexture(GL_TEXTURE0);
-
-    KWin::GLShader *oldShader = data.shader;
-    data.shader = m_shader;
-    KWin::ShaderManager::instance()->pushShader(m_shader);
-
-    m_shader->setUniform("topleft", 10);
-    m_shader->setUniform("scale", QVector2D(w->width() * 1.0 / textureTopLeft->width(),
-                                               w->height() * 1.0 / textureTopLeft->height()));
-
-    m_shader->setUniform("topright", 11);
-    m_shader->setUniform("scale1", QVector2D(w->width() * 1.0 / textureTopRight->width(),
-                                                w->height() * 1.0 / textureTopRight->height()));
-
-    m_shader->setUniform("bottomleft", 12);
-    m_shader->setUniform("scale2", QVector2D(w->width() * 1.0 / textureBottomLeft->width(),
-                                                w->height() * 1.0 / textureBottomLeft->height()));
-
-    m_shader->setUniform("bottomright", 13);
-    m_shader->setUniform("scale3", QVector2D(w->width() * 1.0 / textureBottomRight->width(),
-                                                w->height() * 1.0 / textureBottomRight->height()));
-
-    KWin::Effect::drawWindow(w, mask, region, data);
-    KWin::ShaderManager::instance()->popShader();
-
-    data.shader = oldShader;
-
-    glActiveTexture(GL_TEXTURE10);
-    textureTopLeft->unbind();
-    glActiveTexture(GL_TEXTURE0);
-
-    glActiveTexture(GL_TEXTURE11);
-    textureTopRight->unbind();
-    glActiveTexture(GL_TEXTURE0);
-
-    glActiveTexture(GL_TEXTURE12);
-    textureBottomLeft->unbind();
-    glActiveTexture(GL_TEXTURE0);
-
-    glActiveTexture(GL_TEXTURE13);
-    textureBottomRight->unbind();
-    glActiveTexture(GL_TEXTURE0);
-
-    glDisable(GL_BLEND);
-}
+} // namespace KWin

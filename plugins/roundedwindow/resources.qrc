@@ -1,6 +1,8 @@
 <RCC>
     <qresource prefix="/">
-        <file>shaders.frag.110</file>
-        <file>shaders.frag.140</file>
+        <file>shaders_110/roundedwindow.frag</file>
+        <file>shaders_110/roundedwindow_diff.frag</file>
+        <file>shaders_140/roundedwindow.frag</file>
+        <file>shaders_140/roundedwindow_diff.frag</file>
     </qresource>
 </RCC>

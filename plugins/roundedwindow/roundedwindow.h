@@ -1,6 +1,5 @@
 /*
- *   Copyright © 2021 Reion Wong <reionwong@gmail.com>
- *   Copyright © 2021 Reven Martin <revenmartin@gmail.com>
+ *   Copyright © 2015 Robert Metsäranta <therealestrob@gmail.com>
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -22,44 +21,67 @@
 #define ROUNDEDWINDOW_H
 
 #include <kwineffects.h>
-#include <kwinglplatform.h>
-#include <kwinglutils.h>
 
-#include <xcb/xcb_atom.h>
+namespace KWin {
 
-class RoundedWindow : public KWin::Effect
+class GLTexture;
+
+class Q_DECL_EXPORT RoundedwindowEffect : public Effect
+
 {
     Q_OBJECT
-
 public:
-    enum DataRole {
-        BaseRole = KWin::DataRole::LanczosCacheRole + 100,
-        WindowRadiusRole = BaseRole + 1,
-        WindowClipPathRole = BaseRole + 2,
-        WindowMaskTextureRole = BaseRole + 3,
-        WindowDepthRole = BaseRole + 4
-    };
-
-    RoundedWindow(QObject *parent = nullptr, const QVariantList &args = QVariantList());
-    ~RoundedWindow();
+    RoundedwindowEffect();
+    ~RoundedwindowEffect();
 
     static bool supported();
     static bool enabledByDefault();
+    
+    void setRoundness(const int r);
+    void reconfigure(ReconfigureFlags flags) override;
+    void paintScreen(int mask, const QRegion &region, ScreenPaintData &data) override;
+    void prePaintWindow(EffectWindow* w, WindowPrePaintData& data, std::chrono::milliseconds time) override;
+    void paintWindow(EffectWindow* w, int mask, QRegion region, WindowPaintData& data) override;
+    virtual int requestedEffectChainPosition() const override { return 99; }
 
-    bool hasShadow(KWin::WindowQuadList &qds);
-    bool isMaximized(KWin::EffectWindow *w);
+    enum { RoundedCorners = 0, SquircledCorners };
 
-    void drawWindow(KWin::EffectWindow* w, int mask, const QRegion &region, KWin::WindowPaintData& data) override;
+protected Q_SLOTS:
+    void windowAdded(EffectWindow *window);
+    void windowDeleted(EffectWindow *window);
+    void windowMaximizedStateChanged(EffectWindow *window, bool horizontal, bool vertical);
 
 private:
-    KWin::GLShader *m_shader;
-    KWin::GLTexture *m_texure;
+    void genMasks();
+    void genRect();
 
-    xcb_atom_t m_netWMStateAtom = 0;
-    xcb_atom_t m_netWMStateMaxHorzAtom = 0;
-    xcb_atom_t m_netWMStateMaxVertAtom = 0;
+    bool isValidWindow(EffectWindow *w);
 
-    int m_frameRadius;
+    void fillRegion(const QRegion &reg, const QColor &c);
+    GLTexture copyTexSubImage(const QRect &geo, const QRect &rect, qreal xTranslation=0.0, qreal yTranslation=0.0);
+    QList<GLTexture> getTexRegions(EffectWindow *w, const QRect* rect, const QRect &geo, int nTex, qreal xTranslation=0.0, qreal yTranslation=0.0, bool force=false);
+    void drawSquircle(QPainter *p, float size, int translate);
+    QImage genMaskImg(int size, bool mask, bool outer_rect);
+    void getShadowDiffs(EffectWindow *w, const QRect* rect, QList<GLTexture> &empty_corners_tex, qreal xTranslation=0.0, qreal yTranslation=0.0, bool out_of_screen=false);
+    QRect scale(const QRect rect);
+
+    enum { TopLeft = 0, TopRight, BottomRight, BottomLeft, NTex };
+    enum { Top = 0, Bottom, NShad };
+    GLTexture *m_tex[NTex];
+    GLTexture *m_rect[NTex];
+    GLTexture *m_dark_rect[NTex];
+    int m_size, m_size_scaled, m_alpha, m_corners_type, m_squircle_ratio, m_roundness, m_shadow_offset;
+    bool m_outline, m_dark_theme, m_disabled_for_maximized;
+    QSize m_corner;
+    QMap<EffectWindow *, QRegion> m_clip;
+    QMap<EffectWindow *, bool> m_diff_update;
+    QMap<EffectWindow *, QList<GLTexture>> m_diff;
+    GLShader *m_shader, *m_diff_shader;
+    QList<EffectWindow *> m_managed, m_skipEffect;
+    qreal m_scale=1.0;
 };
 
-#endif
+} // namespace KWin
+
+#endif //ROUNDEDWINDOW_H
+

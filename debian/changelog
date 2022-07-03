@@ -1,3 +1,15 @@
+yoyo-kwin-plugins (0.8-2) UNRELEASED; urgency=low
+
+  * 新增全局圆角
+
+ -- weilinfox <support@yoyoos.com>  Sun, 03 Jul 2022 13:43:49 +0800
+
+yoyo-kwin-plugins (0.8-1) UNRELEASED; urgency=high
+
+  * Rename to yoyo-kwin-plugins
+
+ -- weilinfox <support@yoyoos.com>  Sun, 03 Jul 2022 13:42:05 +0800
+
 yoyo-kwin-plugins (0.8) UNRELEASED; urgency=low
 
   * Initial release (YoyoOS)  <support@yoyoos.com>
