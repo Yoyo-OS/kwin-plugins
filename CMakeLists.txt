@@ -16,6 +16,7 @@ install(FILES config/kwinrc DESTINATION /etc/xdg)
 install(FILES config/kwinrulesrc DESTINATION /etc/xdg)
 
 install(DIRECTORY scripts/yoyolauncher DESTINATION /usr/share/kwin/scripts)
+install(DIRECTORY scripts/yoyoshake DESTINATION /usr/share/kwin/scripts)
 install(DIRECTORY scripts/yoyo_squash DESTINATION /usr/share/kwin/effects)
 install(DIRECTORY scripts/yoyo_scale DESTINATION /usr/share/kwin/effects)
 install(DIRECTORY scripts/yoyo_popups DESTINATION /usr/share/kwin/effects)
