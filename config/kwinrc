@@ -14,7 +14,7 @@ kwin4_effect_squashEnabled=false
 kwin4_effect_translucencyEnabled=false
 magiclampEnabled=false
 
-yoyo_scaleEnabled = true
+yoyo_scaleEnabled = false
 
 
 [Effect-Blur]
